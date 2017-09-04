@@ -1,0 +1,53 @@
+# Node Affinity and NodeSelector
+
+今天我们从NodeAffinity和NodeSelector的设计来理解kubernetes的一些设计原则。
+
+NodeAffinity的主要目的是为了实现更高级的调度策略。基本的调度基于PodSpec中的一个labelSelector，map[string]string，如果节点的label包含该map中所有的key/value，那么可以将该pod调度至该节点。这样节点是否符合pod的调度要求其实是一个binary的选择。但实际情况下，可能存在某两个节点在基本层面都符合，但是在其他方面用户事实上具有一定的倾向性，那么仅仅通过这样一个binary的选择器无法提供此类更为高阶的调度策略。
+
+NodeAffinity基于Constrains/Preference的设计思想。Constrants是节点必须满足的要求，而Preference则是并非必须满足但是可以有倾向性或者优先级的要求。
+
+```go
+type NodeAffinity struct {
+	RequiredDuringSchedulingIgnoredDuringExecution *NodeSelector
+	PreferredDuringSchedulingIgnoredDuringExecution []PreferredSchedulingTerm
+}
+
+type NodeSelector struct {
+	//Required. A list of node selector terms. The terms are ORed.
+	NodeSelectorTerms []NodeSelectorTerm
+}
+
+type PreferredSchedulingTerm struct {
+	// Weight associated with matching the corresponding nodeSelectorTerm, in the range 1-100.
+	Weight int32
+	Preference NodeSelectorTerm
+}
+```
+
+在NodeAffinity的设计经过了大量的讨论，其中一些观点非常典型的体现了kubernetes的设计原则和思想。
+
+## Constraints/Preference 设计是否能满足系统需求
+这一点，系统的主要设计中@davidopp指出，Google的Borg系统也正是采用了Constraints/Preference的设计方式，在其十多年的运行中，事实证明可以满足绝大部分的需求。
+
+## NodeSelector vs LabelSelector
+LabelSelector是已经存在并且通用于整个kubernetes系统之中的，那么为什么需要一个新的但是功能、设计都非常类似已有的labelSelector的NodeSelector？
+
+通过比较NodeSelector和LabelSelector的设计，可以看出两者的主要区别有两点：
+
+1. LabelSelector在多个MatchExpression取And。而NodeSelector在多个MatchExpression取And之外又定义了顶层的OR操作。目前为止这个OR并没有具体的使用案例，只是预留以后扩展，所以这一点并非其本质的区别
+
+2. NodeSelector比LabelSelector的操作运算多了两个：OpGt 以及OpLt。那么为什么不能将这两个操作符添加到LabelSelector中呢？主要原因是LabelSelector是系统中使用非常频繁的操作，因此对性能要求非常高。其他的操作符可以创建Forward和Reverse Index以达到最高的查询性能，添加了这个操作符会导致需要更复杂的查询算法，最终导致较低的系统性能。这也是为什么没有使用Regex的原因。另外一个原因是，LabelSelector目的是为了解决一些通用的问题，但是需要避免过于通用而导致太难于理解。比如通过LabelSelector来选择某个service或者replicaSet的pod，我们应该使得LabelSelector可以一目了然，而不需要用户进行复杂的计算才能搞清楚哪些pod属于哪些service，多个service的pod之间是否有交集等。
+
+3. NodeSelector用于选择节点，节点所具有的属性可能差别较大，因此需要更灵活的选择方式。而对于Pod而言，其属性及标签都由用户定义，我们需要一定程度上来限制可能出现的过于复杂过于灵活的选择方式。
+
+## Preference中的权值
+为什么Preference中的Selector需要定义权值？有什么作用？
+关于Preference的权值，在最初的设计中并没有加入。在PR的讨论中，最开始也是提出设定几个Sliding Scale，比如STRONG_PREFER/PREFER/WEAK_PREFER。其主要设计者@davidopp认为这样的设置看上去可以让用户拥有更多的自主权来决定pod的调度，但是真正在调度算法的实现中并不容易给出一个明确的、一致的实现方式。比如说，如果某个节点可以满足一个高权重的Preference，那么是不是说那些比较低权值的Preference就完全不用考虑？如果一个节点满足三个低权重的Preference，另一个节点满足一个高权重的，那么应该使用哪个节点？
+
+而最终经过层层讨论的方案是加入weight，调度算法不做任何Heuristics，完全由用户来确定。调度算法将考虑综合加权。
+
+## 既然Prefrence加入了权值，为什么不可以将Constrants融入到Preference里面，比如权值设为100%?
+虽然看起来这样可以简化系统设计，但是Constrants和Preference具有本质的区别。比如某个节点可以满足两个60%的Preference，那么是否说这个节点优于另外一个只能满足一个100%权值的Preference? 答案是否定的。
+而一个满足两个50%的Preference的节点是否由于另外一个80%的节点？答案是肯定的。
+
+那么在调度算法的实现，以及用户的使用上，如果将两者糅合在一起，都会带来疑惑。
