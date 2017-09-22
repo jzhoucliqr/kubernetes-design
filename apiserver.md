@@ -1,4 +1,41 @@
-## apiserver design and implementation
+# kubernetes apiserver 设计与实现深入解析(v1.7)
+
+如果你想要了解apiserver的设计，并且一上来就从看代码开始，那么很有可能会像我一样感到一头雾水，无从下手。
+本文试着从另一个角度来解析apiserver的设计与实现。读完本文，希望你能在头脑中有一个基本的认识，如果你自己需要设计类似的api系统，该从何下手。
+
+我们首先从apiserver的最基本功能入手，然后思考如果我们自己来设计一个系统，为了实现这些最基本功能所需要的设计方法，以及
+系统实现所需要的基本模块。然后和现有apiserver的设计实现做对比来了解其设计思路。最后逐步添加
+高级功能并思考如何在现有的基本设计上来实现。
+通过这样的方式你会发现，即使复杂如apiserver的系统，虽然代码有重重抽象，但也是有迹可循，并非无从下手。
+
+## apiserver的基本功能
+apiserver的最基本功能是为用户提供REST API 实现对系统资源的CURD。所以从REST API SERVER出发，apiserver需要的功能模块有:
+
+. RESTful resource 定义与存储
+. URI to resource 匹配
+
+而apiserver也确实是从这两条基本线展开。但是由于其增加了很多抽象和更多功能，所以代码看起来比较不那么smooth。
+
+### resource definition
+每一个resource有其scheme和type的定义。
+
+### API group
+API group 将相关的resource组合在一起，统一管理其升级等。
+
+### multi-version
+apiserver通过apigroup来管理不同group之间的版本独立。
+对于每个资源，有internal-type，和对每个版本的object。internal-type在db中存储。对于API，将会有相应的conversion，进行转换。这样来支持多版本。
+
+### API 动态扩展
+API可以动态扩展。第三方apiserver可以在运行时注册新的API资源到核心apiserver. 核心apiserver将对应的请求proxy到相应的apiserver。这部分功能由kube-aggregator实现。
+
+### URI to resource 匹配
+
+
+ 
+ .
+
+
 
 ## api handler install
 cmd/kube-apiserver/app/server.go
